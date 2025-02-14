@@ -6,7 +6,7 @@ from datetime import datetime
 
 def get_cache_path(image_folder, cache_type):
     """Returns path to cache file based on type (similar/blurry)"""
-    # Create cache in project directory instead of image folder
+    # Create cache in project directory
     project_root = Path(__file__).parent.parent.parent
     cache_dir = project_root / ".cache"
     cache_dir.mkdir(exist_ok=True)

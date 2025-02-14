@@ -5,9 +5,39 @@ from PyQt5.QtWidgets import (
     QProgressDialog,
     QApplication,
     QPushButton,
+    QDialog,
 )
 from PyQt5.QtGui import QPixmap
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QSize
+
+
+class ExpandedImageWindow(QDialog):
+    def __init__(self, image_path, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Image Viewer")
+        self.setMinimumSize(400, 400)
+
+        layout = QVBoxLayout(self)
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.image_label)
+
+        # Load and display the image
+        self.pixmap = QPixmap(str(image_path))
+        self.update_image_size()
+
+    def update_image_size(self):
+        """Update image size when window is resized"""
+        if not self.pixmap.isNull():
+            scaled_pixmap = self.pixmap.scaled(
+                self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            self.image_label.setPixmap(scaled_pixmap)
+
+    def resizeEvent(self, event):
+        """Handle window resize events"""
+        super().resizeEvent(event)
+        self.update_image_size()
 
 
 class ClickableImageLabel(QFrame):
@@ -15,8 +45,25 @@ class ClickableImageLabel(QFrame):
         super().__init__(parent)
         self.layout = QVBoxLayout(self)
         self.image_label = QLabel(self)
-        self.layout.addWidget(self.image_label)
 
+        # Create expand button
+        self.expand_button = QPushButton("⤢", self)
+        self.expand_button.setFixedSize(20, 20)
+        self.expand_button.clicked.connect(self.show_expanded)
+        self.expand_button.setStyleSheet(
+            """
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.8);
+                border: 1px solid gray;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 1.0);
+            }
+        """
+        )
+
+        self.layout.addWidget(self.image_label)
         self.layout.setAlignment(Qt.AlignCenter)
         self.image_label.setAlignment(Qt.AlignCenter)
         self.image_label.setMinimumSize(200, 200)
@@ -36,6 +83,7 @@ class ClickableImageLabel(QFrame):
         """
         )
         self.selected = False
+        self.image_path = None
 
     def setPixmap(self, pixmap):
         scaled_pixmap = pixmap.scaled(
@@ -43,11 +91,35 @@ class ClickableImageLabel(QFrame):
         )
         self.image_label.setPixmap(scaled_pixmap)
 
+        # Position expand button in top-right corner
+        button_margin = 5
+        self.expand_button.move(
+            self.width() - self.expand_button.width() - button_margin, button_margin
+        )
+
+    def resizeEvent(self, event):
+        """Handle widget resize events"""
+        super().resizeEvent(event)
+        # Update expand button position
+        if hasattr(self, "expand_button"):
+            button_margin = 5
+            self.expand_button.move(
+                self.width() - self.expand_button.width() - button_margin, button_margin
+            )
+
+    def show_expanded(self):
+        """Show the expanded image window"""
+        if self.image_path:
+            dialog = ExpandedImageWindow(self.image_path, self)
+            dialog.exec_()
+
     def mousePressEvent(self, event):
-        self.selected = not self.selected
-        self.setProperty("selected", self.selected)
-        self.style().unpolish(self)
-        self.style().polish(self)
+        # Only toggle selection if not clicking the expand button
+        if not self.expand_button.geometry().contains(event.pos()):
+            self.selected = not self.selected
+            self.setProperty("selected", self.selected)
+            self.style().unpolish(self)
+            self.style().polish(self)
 
 
 class LoadingSpinner:
