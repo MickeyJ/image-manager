@@ -1,0 +1,140 @@
+# =====================================
+# 🚀 General Git Ignore for Python Projects
+# Covers: Python, Conda, Virtual Envs, Logs, Editors, OS files
+# =====================================
+
+# =====================
+# 🐍 Python Specific
+# =====================
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+pip-wheel-metadata/
+*.manifest
+*.spec
+
+# =====================
+# 📦 Virtual Environments
+# =====================
+env/
+venv/
+.venv/
+env.bak/
+env_old/
+conda-meta/
+*.conda
+*.virtualenv
+*.venv.bak/
+
+# =====================
+# 💾 Jupyter Notebooks
+# =====================
+.ipynb_checkpoints/
+*.checkpoint
+
+# =====================
+# 🔥 PyTorch / TensorFlow / AI Models
+# =====================
+*.pt
+*.pth
+*.onnx
+*.tflite
+*.h5
+*.ckpt
+logs/
+wandb/
+mlruns/
+lightning_logs/
+
+# =====================
+# 🚀 OpenAI / API Keys (NEVER COMMIT SECRETS)
+# =====================
+openai_api_key.txt
+.env
+*.secrets
+config.json
+keys.json
+
+# =====================
+# ⚙️ IDE / Editor Specific
+# =====================
+# VS Code
+.vscode/
+*.code-workspace
+.history/
+
+# PyCharm
+.idea/
+*.iml
+*.ipr
+*.iws
+.idea_modules/
+*.idea/workspace.xml
+.idea/inspectionProfiles/
+
+# Jupyter Notebook metadata
+.ipynb_checkpoints/
+
+# =====================
+# 🔄 Cache / Logs / Debugging
+# =====================
+*.log
+*.bak
+*.swp
+*.swo
+*.swn
+*.tmp
+nohup.out
+profile_default/
+.DS_Store
+Thumbs.db
+
+# =====================
+# 🌍 Operating System Files
+# =====================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+*.icloud
+Icon?
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.nfs*
+
+# =====================
+# 📜 Dependency Management
+# =====================
+Pipfile
+Pipfile.lock
+poetry.lock
+requirements.txt
+requirements-dev.txt
+
+# =====================
+# 📦 Docker / Kubernetes
+# =====================
+.dockerignore
+docker-compose.override.yml
+*.dockerfile
+.kubernetes/
+
+# =====================
+# 🗂️ Git Ignore Rule Exceptions (Unignore Certain Files)
+# =====================
+!requirements.txt
+!config.sample.json
