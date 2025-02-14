@@ -17,11 +17,20 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QFrame,
     QTabWidget,
+    QProgressDialog,
 )
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QObject
 from sklearn.cluster import KMeans
 import argparse
+import logging
+
+# Add this near the top of the file, after imports
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    datefmt="%H:%M:%S",
+)
 
 # Load CLIP model
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -58,10 +67,17 @@ def detect_noise(image_path, threshold=500):
     return noise > threshold
 
 
-def are_images_similar(img1, img2, threshold=5):
-    hash1 = imagehash.phash(Image.open(img1))
-    hash2 = imagehash.phash(Image.open(img2))
-    return abs(hash1 - hash2) < threshold
+def are_images_similar(img1, img2, threshold=10):
+    try:
+        logging.info(f"Comparing images: {img1} and {img2}")
+        hash1 = imagehash.phash(Image.open(img1))
+        hash2 = imagehash.phash(Image.open(img2))
+        difference = abs(hash1 - hash2)
+        logging.info(f"Hash difference: {difference} (threshold: {threshold})")
+        return difference < threshold
+    except Exception as e:
+        logging.error(f"Error comparing images: {e}")
+        return False
 
 
 def should_delete(image_path):
@@ -268,35 +284,28 @@ class BatchViewTab(QWidget):
         self.grid_layout.addWidget(image_frame, row, col)
 
     def delete_batch(self):
-        # Get all visible image frames
         selected_to_move = []
         for i in range(self.grid_layout.count()):
             widget = self.grid_layout.itemAt(i).widget()
             if isinstance(widget, ClickableImageLabel) and widget.selected:
                 selected_to_move.append(widget.image_index)
 
-        # If no images are selected, return
         if not selected_to_move:
+            logging.info("No images selected for moving to limbo")
             return
 
-        # Move selected images to limbo
+        logging.info(f"Moving {len(selected_to_move)} images to limbo")
         for index in sorted(selected_to_move, reverse=True):
             source = self.image_files[index]
             destination = self.limbo_folder / source.name
-            # Handle filename conflicts
             counter = 1
             while destination.exists():
                 destination = (
                     self.limbo_folder / f"{source.stem}_{counter}{source.suffix}"
                 )
                 counter += 1
+            logging.info(f"Moving {source} to {destination}")
             source.rename(destination)
-
-        # Refresh image list and display
-        self.image_files = list(get_recursive_image_files(self.image_folder))[
-            : self.batch_size
-        ]
-        self.load_images()
 
     def restore_from_limbo(self):
         # Create a new dialog to show limbo images
@@ -313,79 +322,235 @@ class BatchViewTab(QWidget):
         self.load_images()
 
 
+class LoadingSpinner:
+    def __init__(self, parent, text="Processing..."):
+        self.progress = QProgressDialog(text, None, 0, 0, parent)
+        self.progress.setWindowModality(Qt.WindowModal)
+        self.progress.setWindowTitle("Please Wait")
+        self.progress.setCancelButton(None)
+        self.progress.setMinimumDuration(0)
+        self.progress.setAutoClose(True)
+
+    def show(self):
+        self.progress.show()
+        QApplication.processEvents()
+
+    def close(self):
+        self.progress.close()
+
+
 class SimilarImagesTab(QWidget):
-    def __init__(self, image_folder):
+    def __init__(self, image_folder, batch_size=1000):
         super().__init__()
         self.image_folder = Path(image_folder)
+        self.batch_size = batch_size
+        self.current_index = 0
         self.image_files = list(get_recursive_image_files(self.image_folder))
+        self.similar_groups = []
         self.initUI()
 
     def initUI(self):
         self.layout = QVBoxLayout()
         self.grid_layout = QGridLayout()
-        self.button_layout = QHBoxLayout()
 
+        # Add status label at the top
+        self.status_label = QLabel("")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.layout.addWidget(self.status_label)
+
+        # Add grid in the middle
+        self.layout.addLayout(self.grid_layout)
+
+        # Add navigation buttons
+        self.nav_layout = QHBoxLayout()
+        self.prev_button = QPushButton("Previous Groups", self)
+        self.next_button = QPushButton("Next Groups", self)
+        self.prev_button.clicked.connect(self.prev_batch)
+        self.next_button.clicked.connect(self.next_batch)
+
+        nav_button_style = """
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                padding: 5px 15px;
+                border: none;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+            }
+        """
+        self.prev_button.setStyleSheet(nav_button_style)
+        self.next_button.setStyleSheet(nav_button_style)
+
+        self.nav_layout.addWidget(self.prev_button)
+        self.nav_layout.addWidget(self.next_button)
+
+        # Add scan button at the bottom
         self.scan_button = QPushButton("Scan for Similar Images", self)
         self.scan_button.clicked.connect(self.find_similar_images)
-        self.button_layout.addWidget(self.scan_button)
+        self.scan_button.setToolTip(
+            "This process may take a long time (up to an hour) depending on the number of images."
+        )
 
-        self.layout.addLayout(self.grid_layout)
-        self.layout.addLayout(self.button_layout)
+        # Add layouts to main layout in order: status, grid, navigation, scan
+        self.layout.addLayout(self.nav_layout)
+        self.layout.addWidget(self.scan_button)
+
         self.setLayout(self.layout)
+        self.update_button_states()
 
     def find_similar_images(self):
-        similar_groups = []
+        total_images = len(self.image_files)
+        # Show warning if there are many images
+        if total_images > 1000:
+            warning_msg = (
+                f"You have {total_images} images. This process could take a long time.\n"
+                "The application will remain responsive but please be patient."
+            )
+            self.status_label.setText(warning_msg)
+            logging.info(warning_msg)
+
+        self.scan_button.setEnabled(False)
+        self.status_label.setText("Scanning for similar images...")
+
+        # Show loading spinner with initial count
+        spinner = LoadingSpinner(
+            self, f"Starting scan of {total_images} images...\nThis may take a while."
+        )
+        spinner.show()
+
+        logging.info("Starting similar image scan...")
+        self.similar_groups = []
         processed = set()
+        total_images = len(self.image_files)
 
-        for i, img1 in enumerate(self.image_files):
-            if str(img1) in processed:
-                continue
-
-            current_group = [img1]
-            for img2 in self.image_files[i + 1 :]:
-                if str(img2) in processed:
+        try:
+            for i, img1 in enumerate(self.image_files):
+                if str(img1) in processed:
                     continue
-                if are_images_similar(str(img1), str(img2)):
-                    current_group.append(img2)
-                    processed.add(str(img2))
 
-            if len(current_group) > 1:
-                similar_groups.append(current_group)
-                processed.add(str(img1))
+                logging.info(f"Processing image {i+1}/{total_images}: {img1}")
+                current_group = [img1]
 
-        self.display_similar_groups(similar_groups)
+                # Update progress text
+                spinner.progress.setLabelText(f"Scanning image {i+1} of {total_images}")
+                QApplication.processEvents()
 
-    def display_similar_groups(self, groups):
+                for img2 in self.image_files[i + 1 :]:
+                    if str(img2) in processed:
+                        continue
+
+                    try:
+                        if are_images_similar(str(img1), str(img2)):
+                            logging.info(f"Found similar image: {img2}")
+                            current_group.append(img2)
+                            processed.add(str(img2))
+                    except Exception as e:
+                        logging.error(f"Error processing image pair: {e}")
+
+                if len(current_group) > 1:
+                    logging.info(f"Found group of {len(current_group)} similar images")
+                    self.similar_groups.append(current_group)
+                    processed.add(str(img1))
+
+        finally:
+            spinner.close()
+            self.scan_button.setEnabled(True)
+
+        logging.info(
+            f"Scan complete. Found {len(self.similar_groups)} groups of similar images"
+        )
+        self.current_index = 0
+        self.display_similar_groups()
+        self.update_button_states()
+        self.status_label.setText(
+            f"Found {len(self.similar_groups)} groups of similar images"
+        )
+
+    def display_similar_groups(self):
         # Clear previous display
         for i in reversed(range(self.grid_layout.count())):
             self.grid_layout.itemAt(i).widget().setParent(None)
 
+        if not self.similar_groups:
+            no_results = QLabel("No similar images found")
+            no_results.setAlignment(Qt.AlignCenter)
+            self.grid_layout.addWidget(no_results, 0, 0, 1, 3)
+            return
+
+        # Sort groups by size (largest first)
+        if not hasattr(self, "sorted_groups"):
+            self.sorted_groups = sorted(self.similar_groups, key=len, reverse=True)
+            logging.info(f"Sorted {len(self.sorted_groups)} groups by size")
+
+        # Display only the current batch of groups
+        batch_end = min(self.current_index + 3, len(self.sorted_groups))
+        current_groups = self.sorted_groups[self.current_index : batch_end]
+
+        # Update status with position information
+        self.status_label.setText(
+            f"Showing groups {self.current_index + 1}-{batch_end} of {len(self.sorted_groups)} "
+            f"(Total similar images found: {sum(len(g) for g in self.sorted_groups)})"
+        )
+
         current_row = 0
-        for group in groups:
-            # Add a separator label
-            separator = QLabel(f"Similar Group ({len(group)} images)")
+        for group_idx, group in enumerate(current_groups):
+            separator = QLabel(
+                f"Similar Group {self.current_index + group_idx + 1} "
+                f"({len(group)} similar images)"
+            )
+            separator.setStyleSheet("font-weight: bold; padding: 10px;")
             self.grid_layout.addWidget(separator, current_row, 0, 1, 3)
             current_row += 1
 
-            # Display images in the group
             for i, img_path in enumerate(group):
-                col = i % 3
-                if col == 0 and i != 0:
-                    current_row += 1
+                try:
+                    col = i % 3
+                    if col == 0 and i != 0:
+                        current_row += 1
 
-                image_frame = ClickableImageLabel(self)
-                pixmap = QPixmap(str(img_path))
-                image_frame.setPixmap(pixmap.scaled(200, 200, Qt.KeepAspectRatio))
-                self.grid_layout.addWidget(image_frame, current_row, col)
+                    image_frame = ClickableImageLabel(self)
+                    pixmap = QPixmap(str(img_path))
+                    if pixmap.isNull():
+                        logging.error(f"Failed to load image: {img_path}")
+                        continue
+                    image_frame.setPixmap(pixmap)
+                    image_frame.image_path = img_path
+                    self.grid_layout.addWidget(image_frame, current_row, col)
+                except Exception as e:
+                    logging.error(f"Error displaying image {img_path}: {e}")
 
-            current_row += 2  # Add space between groups
+            current_row += 2
+
+    def update_button_states(self):
+        self.prev_button.setEnabled(self.current_index > 0)
+        self.next_button.setEnabled(self.current_index + 3 < len(self.similar_groups))
+
+    def prev_batch(self):
+        if self.current_index > 0:
+            self.current_index = max(0, self.current_index - 3)
+            self.display_similar_groups()
+            self.update_button_states()
+
+    def next_batch(self):
+        if self.current_index + 3 < len(self.similar_groups):
+            self.current_index += 3
+            self.display_similar_groups()
+            self.update_button_states()
 
 
 class BlurryImagesTab(QWidget):
-    def __init__(self, image_folder):
+    def __init__(self, image_folder, batch_size=1000):
         super().__init__()
         self.image_folder = Path(image_folder)
+        self.batch_size = batch_size
+        self.current_index = 0
         self.image_files = list(get_recursive_image_files(self.image_folder))
+        self.bad_images = []
         self.initUI()
 
     def initUI(self):
@@ -401,25 +566,107 @@ class BlurryImagesTab(QWidget):
         self.layout.addLayout(self.button_layout)
         self.setLayout(self.layout)
 
+        # Add navigation buttons
+        self.nav_layout = QHBoxLayout()
+        self.prev_button = QPushButton("Previous Batch", self)
+        self.next_button = QPushButton("Next Batch", self)
+        self.prev_button.clicked.connect(self.prev_batch)
+        self.next_button.clicked.connect(self.next_batch)
+
+        nav_button_style = """
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                padding: 5px 15px;
+                border: none;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+            }
+        """
+        self.prev_button.setStyleSheet(nav_button_style)
+        self.next_button.setStyleSheet(nav_button_style)
+
+        self.nav_layout.addWidget(self.prev_button)
+        self.nav_layout.addWidget(self.next_button)
+
+        self.layout.addLayout(self.nav_layout)
+        self.status_label = QLabel("")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.layout.addWidget(self.status_label)
+
     def find_bad_images(self):
-        bad_images = []
-        for img_path in self.image_files:
-            if should_delete(str(img_path)):
-                bad_images.append(img_path)
+        self.scan_button.setEnabled(False)
+        spinner = LoadingSpinner(self, "Scanning for blurry/noisy images...")
+        spinner.show()
 
-        self.display_bad_images(bad_images)
+        try:
+            self.bad_images = []
+            total_images = len(self.image_files)
 
-    def display_bad_images(self, images):
+            for i, img_path in enumerate(self.image_files):
+                spinner.progress.setLabelText(f"Scanning image {i+1} of {total_images}")
+                QApplication.processEvents()
+
+                if should_delete(str(img_path)):
+                    self.bad_images.append(img_path)
+
+        finally:
+            spinner.close()
+            self.scan_button.setEnabled(True)
+
+        self.current_index = 0
+        self.display_bad_images()
+        self.status_label.setText(f"Found {len(self.bad_images)} problematic images")
+
+    def display_bad_images(self):
         # Clear previous display
         for i in reversed(range(self.grid_layout.count())):
             self.grid_layout.itemAt(i).widget().setParent(None)
 
-        for i, img_path in enumerate(images):
-            row, col = divmod(i, 3)
-            image_frame = ClickableImageLabel(self)
-            pixmap = QPixmap(str(img_path))
-            image_frame.setPixmap(pixmap.scaled(200, 200, Qt.KeepAspectRatio))
-            self.grid_layout.addWidget(image_frame, row, col)
+        if not self.bad_images:
+            no_results = QLabel("No blurry or noisy images found")
+            no_results.setAlignment(Qt.AlignCenter)
+            self.grid_layout.addWidget(no_results, 0, 0, 1, 3)
+            return
+
+        # Display current batch of images
+        batch_end = min(self.current_index + 9, len(self.bad_images))
+        current_batch = self.bad_images[self.current_index : batch_end]
+
+        for i, img_path in enumerate(current_batch):
+            try:
+                row, col = divmod(i, 3)
+                image_frame = ClickableImageLabel(self)
+                pixmap = QPixmap(str(img_path))
+                if pixmap.isNull():
+                    logging.error(f"Failed to load image: {img_path}")
+                    continue
+                image_frame.setPixmap(pixmap)
+                image_frame.image_path = img_path
+                self.grid_layout.addWidget(image_frame, row, col)
+            except Exception as e:
+                logging.error(f"Error displaying image {img_path}: {e}")
+
+    def update_button_states(self):
+        self.prev_button.setEnabled(self.current_index > 0)
+        self.next_button.setEnabled(self.current_index + 9 < len(self.bad_images))
+
+    def prev_batch(self):
+        if self.current_index > 0:
+            self.current_index = max(0, self.current_index - 9)
+            self.display_bad_images()
+            self.update_button_states()
+
+    def next_batch(self):
+        if self.current_index + 9 < len(self.bad_images):
+            self.current_index += 9
+            self.display_bad_images()
+            self.update_button_states()
 
 
 class ImageReviewer(QWidget):
@@ -515,19 +762,23 @@ class LimboDialog(QWidget):
             self.grid_layout.addWidget(image_frame, row, col)
 
     def restore_selected(self):
+        restored_count = 0
         for i in range(self.grid_layout.count()):
             widget = self.grid_layout.itemAt(i).widget()
             if isinstance(widget, ClickableImageLabel) and widget.selected:
                 source = widget.image_path
                 destination = self.main_folder / source.name
-                # Handle filename conflicts
                 counter = 1
                 while destination.exists():
                     destination = (
                         self.main_folder / f"{source.stem}_{counter}{source.suffix}"
                     )
                     counter += 1
+                logging.info(f"Restoring {source} to {destination}")
                 source.rename(destination)
+                restored_count += 1
+
+        logging.info(f"Restored {restored_count} images from limbo")
         self.close()
 
     def delete_selected(self):
