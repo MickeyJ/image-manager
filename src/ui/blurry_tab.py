@@ -13,9 +13,9 @@ from PyQt5.QtGui import QPixmap
 from pathlib import Path
 import logging
 
-from ..utils.cache import get_cache_path, save_cache, load_cache
+from ..utils.cache import load_cache, save_cache
 from ..utils.image_processing import is_blurry, detect_noise
-from ..utils.file_ops import get_recursive_image_files, move_to_limbo
+from ..utils.file_ops import get_recursive_image_files
 from .widgets import ClickableImageLabel, LoadingSpinner
 
 
@@ -82,22 +82,17 @@ class BlurryImagesTab(QWidget):
             return
 
         self.scanning = True
-        cache_path = get_cache_path(self.image_folder, "blurry")
-        cache_data = load_cache(cache_path)
+        logging.info("Starting blurry image scan")
 
-        # Check cache
-        if cache_data:
-            current_files = set(str(f) for f in self.image_files)
-            cached_files = set(cache_data["images"])
+        # Try to load from cache
+        cached_data = load_cache(self.image_folder, "blurry")
+        if cached_data is not None:
+            self.bad_images = [Path(p) for p in cached_data["bad_images"]]
+            self.current_index = 0
+            self.display_bad_images()
+            self.scanning = False
+            return
 
-            if current_files == cached_files:
-                self.bad_images = [Path(p) for p in cache_data["bad_images"]]
-                self.current_index = 0
-                self.display_bad_images()
-                self.scanning = False
-                return
-
-        # Start new scan
         spinner = LoadingSpinner(
             self,
             "Scanning for blurry and noisy images...",
@@ -121,12 +116,9 @@ class BlurryImagesTab(QWidget):
                     self.bad_images.append(img_path)
 
             if not spinner.was_cancelled:
-                # Save cache
-                cache_data = {
-                    "images": [str(p) for p in self.image_files],
-                    "bad_images": [str(p) for p in self.bad_images],
-                }
-                save_cache(cache_data, cache_path)
+                # Save to cache
+                cache_data = {"bad_images": [str(p) for p in self.bad_images]}
+                save_cache(self.image_folder, cache_data, "blurry")
 
         finally:
             spinner.close()
@@ -152,7 +144,7 @@ class BlurryImagesTab(QWidget):
         for i, img_path in enumerate(current_batch):
             try:
                 row, col = divmod(i, 3)
-                image_frame = ClickableImageLabel(self)
+                image_frame = ClickableImageLabel(self, root_folder=self.image_folder)
                 pixmap = QPixmap(str(img_path))
                 if pixmap.isNull():
                     logging.error(f"Failed to load image: {img_path}")

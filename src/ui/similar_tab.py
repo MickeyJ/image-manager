@@ -7,15 +7,22 @@ from PyQt5.QtWidgets import (
     QGridLayout,
     QScrollArea,
     QApplication,
+    QMessageBox,
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPixmap
 from pathlib import Path
 import logging
+import traceback
+import torch
 
-from ..utils.cache import get_cache_path, save_cache, load_cache
-from ..utils.image_processing import are_images_similar
-from ..utils.file_ops import get_recursive_image_files, move_to_limbo
+from ..utils.cache import save_cache, load_cache, clear_cache
+from ..utils.image_processing import (
+    are_images_similar,
+    is_clip_available,
+    get_clip_status,
+)
+from ..utils.file_ops import get_recursive_image_files, move_to_keep
 from .widgets import ClickableImageLabel, LoadingSpinner
 
 
@@ -28,8 +35,19 @@ class SimilarImagesTab(QWidget):
         self.image_files = []
         self.similar_groups = []
         self.scanning = False
+
         self.initUI()
         self.load_images()
+
+        # Try to load from cache first
+        cached_groups = load_cache(self.image_folder, "similar")
+        if cached_groups is not None:
+            logging.info("Using cached similar image groups")
+            self.similar_groups = cached_groups
+            self.current_index = 0
+            self.display_similar_groups()
+            self.scanning = False
+            return
 
     def initUI(self):
         self.layout = QVBoxLayout()
@@ -87,38 +105,22 @@ class SimilarImagesTab(QWidget):
         if self.scanning:
             return
 
+        # Check for CLIP availability first
+        if not is_clip_available():
+            QMessageBox.critical(self, "CLIP Model Not Available", get_clip_status())
+            return
+
+        clear_cache(self.image_folder, "similar")
+
         self.scanning = True
-        cache_path = get_cache_path(self.image_folder, "similar")
-        cache_data = load_cache(cache_path)
-
-        # Check cache
-        if cache_data and "groups" in cache_data:  # Add check for "groups" key
-            current_files = set(str(f) for f in self.image_files)
-            try:
-                cached_files = set(
-                    path for group in cache_data["groups"] for path in group
-                )
-
-                if current_files == cached_files:
-                    logging.info("Using cached similar images data")
-                    self.similar_groups = [
-                        [Path(p) for p in group] for group in cache_data["groups"]
-                    ]
-                    self.current_index = 0
-                    self.display_similar_groups()
-                    self.scanning = False
-                    return
-                else:
-                    logging.info("Cache invalid - file list changed")
-            except Exception as e:
-                logging.error(f"Error loading cache: {e}")
+        logging.info("Starting similar image scan")
 
         # Start new scan
         total_images = len(self.image_files)
-        if total_images > 1000:
-            self.status_label.setText(
-                f"Scanning {total_images} images. This may take a while..."
-            )
+        logging.info(f"Starting scan of {total_images} images")
+        self.status_label.setText(
+            f"Scanning {total_images} images. This may take a while..."
+        )
 
         spinner = LoadingSpinner(
             self,
@@ -129,10 +131,14 @@ class SimilarImagesTab(QWidget):
 
         self.similar_groups = []
         processed = set()
+        similar_count = 0
+        batch_size = 10  # Process in smaller batches
 
         try:
             for i, img1 in enumerate(self.image_files):
                 if spinner.was_cancelled:
+                    logging.info("Scan cancelled by user")
+                    save_cache(self.image_folder, self.similar_groups, "similar")
                     self.status_label.setText("Scan cancelled")
                     break
 
@@ -140,37 +146,70 @@ class SimilarImagesTab(QWidget):
                     continue
 
                 current_group = [img1]
-                spinner.progress.setLabelText(f"Scanning image {i+1} of {total_images}")
-                QApplication.processEvents()
+                remaining_images = self.image_files[i + 1 :]
+                total_remaining = len(remaining_images)
+                compare_index = 0
 
-                for img2 in self.image_files[i + 1 :]:
+                # Process remaining images in batches
+                for batch_start in range(0, total_remaining, batch_size):
                     if spinner.was_cancelled:
                         break
 
-                    if str(img2) in processed:
-                        continue
+                    logging.info(f"scanning image {i}")
+                    QApplication.processEvents()
 
-                    if are_images_similar(str(img1), str(img2)):
-                        current_group.append(img2)
-                        processed.add(str(img2))
+                    # Process batch
+                    batch_end = min(batch_start + batch_size, total_remaining)
+                    current_batch = remaining_images[batch_start:batch_end]
+
+                    for i2, img2 in enumerate(current_batch):
+                        if str(img2) in processed:
+                            continue
+                        compare_index += 1
+
+                        # Update progress
+                        progress_msg = (
+                            f"Comparing image {i+1} to {compare_index} of {total_images}\n"
+                            f"Found {len(self.similar_groups)} groups of similar images\n"
+                            f"Similar images found: {similar_count}"
+                        )
+                        spinner.progress.setLabelText(progress_msg)
+                        # Force UI update after each batch
+                        QApplication.processEvents()
+
+                        try:
+                            if are_images_similar(str(img1), str(img2), 0.91):
+                                current_group.append(img2)
+                                processed.add(str(img2))
+                                similar_count += 1
+                        except Exception as e:
+                            logging.error(f"Error comparing {img1} with {img2}: {e}")
+                            continue
 
                 if len(current_group) > 1:
                     self.similar_groups.append(current_group)
                     processed.add(str(img1))
+                    logging.debug(
+                        f"Found similar group with {len(current_group)} images"
+                    )
 
             if not spinner.was_cancelled:
-                # Sort groups by size
+                logging.info(f"Scan complete. Found {len(self.similar_groups)} groups")
                 self.similar_groups.sort(key=len, reverse=True)
-                # Save cache
+                # Save results to cache
                 cache_data = {
                     "groups": [[str(p) for p in group] for group in self.similar_groups]
                 }
-                save_cache(cache_data, cache_path)
+                save_cache(self.image_folder, cache_data, "similar")
 
+        except Exception as e:
+            logging.error(f"Error during scan: {e}")
+            logging.error(traceback.format_exc())
         finally:
             spinner.close()
             self.scanning = False
             self.display_similar_groups()
+            logging.info("Scan finished")
 
     def display_similar_groups(self):
         """Display the current batch of similar image groups"""

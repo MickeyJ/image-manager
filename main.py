@@ -32,11 +32,22 @@ from src.ui.main_window import ImageManager
 
 
 def setup_logging():
+    """Set up logging configuration"""
+    log_file = "image_manager.log"
+
+    # Clear previous log file
+    with open(log_file, "w") as f:
+        f.write("")
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
-        datefmt="%H:%M:%S",
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler(),  # Also print to console
+        ],
     )
+    logging.info("Logging initialized")
 
 
 def main():
@@ -47,6 +58,13 @@ def main():
         "--folder", type=str, required=True, help="Path to image folder"
     )
     args = parser.parse_args()
+
+    logging.info("App Starting")
+
+    # Check if CUDA is available
+    logging.info(f"CUDA available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        logging.info(f"CUDA device: {torch.cuda.get_device_name(0)}")
 
     # Validate folder
     image_folder = Path(args.folder)

@@ -13,8 +13,9 @@ from PyQt5.QtGui import QPixmap
 from pathlib import Path
 import logging
 
-from ..utils.file_ops import get_recursive_image_files, move_to_limbo
+from ..utils.file_ops import get_recursive_image_files, move_to_keep, restore_from_keep
 from .widgets import ClickableImageLabel, LoadingSpinner
+from .keep_dialog import KeepDialog
 
 
 class BatchViewTab(QWidget):
@@ -24,9 +25,9 @@ class BatchViewTab(QWidget):
         self.batch_size = batch_size
         self.current_index = 0
 
-        # Create limbo folder if it doesn't exist
-        self.limbo_folder = self.image_folder / "limbo"
-        self.limbo_folder.mkdir(exist_ok=True)
+        # Create keep folder if it doesn't exist
+        self.keep_folder = self.image_folder / "keep"
+        self.keep_folder.mkdir(exist_ok=True)
 
         self.image_files = []
         self.initUI()
@@ -60,10 +61,10 @@ class BatchViewTab(QWidget):
 
         # Action buttons
         action_layout = QHBoxLayout()
-        self.move_button = QPushButton("Move Selected to Limbo")
-        self.restore_button = QPushButton("Restore from Limbo")
-        self.move_button.clicked.connect(self.move_selected_to_limbo)
-        self.restore_button.clicked.connect(self.restore_from_limbo)
+        self.move_button = QPushButton("Move Selected to Keep")
+        self.restore_button = QPushButton("Restore from Keep")
+        self.move_button.clicked.connect(self.move_selected_to_keep)
+        self.restore_button.clicked.connect(self.restore_from_keep)
 
         action_layout.addWidget(self.move_button)
         action_layout.addWidget(self.restore_button)
@@ -97,7 +98,7 @@ class BatchViewTab(QWidget):
         for i, img_path in enumerate(current_batch):
             try:
                 row, col = divmod(i, 3)
-                image_frame = ClickableImageLabel(self)
+                image_frame = ClickableImageLabel(self, root_folder=self.image_folder)
                 pixmap = QPixmap(str(img_path))
                 if pixmap.isNull():
                     logging.error(f"Failed to load image: {img_path}")
@@ -140,25 +141,23 @@ class BatchViewTab(QWidget):
             self.display_current_batch()
             self.update_status()
 
-    def move_selected_to_limbo(self):
-        """Move selected images to limbo folder"""
+    def move_selected_to_keep(self):
+        """Move selected images to keep folder"""
         moved_count = 0
         for i in range(self.grid_layout.count()):
             widget = self.grid_layout.itemAt(i).widget()
             if isinstance(widget, ClickableImageLabel) and widget.selected:
-                if move_to_limbo(widget.image_path, self.limbo_folder):
+                if move_to_keep(widget.image_path, self.keep_folder):
                     moved_count += 1
 
         if moved_count > 0:
-            self.load_images()  # Refresh the view
+            self.load_images()
 
-    def restore_from_limbo(self):
-        """Open the limbo dialog"""
-        from .limbo_dialog import LimboDialog
-
-        self.limbo_dialog = LimboDialog(self.limbo_folder, self.image_folder)
-        self.limbo_dialog.finished.connect(self.load_images)
-        self.limbo_dialog.show()
+    def restore_from_keep(self):
+        """Open the keep dialog"""
+        self.keep_dialog = KeepDialog(self.keep_folder, self.image_folder)
+        self.keep_dialog.finished.connect(self.load_images)
+        self.keep_dialog.show()
 
     def keyPressEvent(self, event):
         """Handle keyboard navigation"""
@@ -167,4 +166,9 @@ class BatchViewTab(QWidget):
         elif event.key() == Qt.Key_Left:
             self.prev_batch()
         elif event.key() == Qt.Key_Delete:
-            self.move_selected_to_limbo()
+            self.move_selected_to_keep()
+
+    def refresh_view(self):
+        """Refresh the image display"""
+        self.image_files = list(get_recursive_image_files(self.image_folder))
+        self.display_current_batch()

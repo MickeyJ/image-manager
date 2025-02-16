@@ -13,29 +13,29 @@ from pathlib import Path
 import logging
 import os
 
-from ..utils.file_ops import restore_from_limbo
+from ..utils.file_ops import restore_from_keep
 from .widgets import ClickableImageLabel
 
 
-class LimboDialogSignals(QObject):
+class KeepDialogSignals(QObject):
     finished = pyqtSignal()
 
 
-class LimboDialog(QWidget):
-    def __init__(self, limbo_folder, main_folder):
+class KeepDialog(QWidget):
+    def __init__(self, keep_folder, main_folder):
         super().__init__()
-        self.limbo_folder = Path(limbo_folder)
+        self.keep_folder = Path(keep_folder)
         self.main_folder = Path(main_folder)
 
         # Set up signals
-        self.signals = LimboDialogSignals()
+        self.signals = KeepDialogSignals()
         self.finished = self.signals.finished
 
         self.initUI()
-        self.load_limbo_images()
+        self.load_keep_images()
 
     def initUI(self):
-        self.setWindowTitle("Restore from Limbo")
+        self.setWindowTitle("Restore from Keep")
         self.setMinimumSize(800, 600)
         self.layout = QVBoxLayout()
 
@@ -66,23 +66,23 @@ class LimboDialog(QWidget):
         self.layout.addLayout(button_layout)
         self.setLayout(self.layout)
 
-    def load_limbo_images(self):
-        """Load and display all images from limbo"""
-        self.limbo_files = list(self.limbo_folder.glob("*.*"))
+    def load_keep_images(self):
+        """Load and display all images from keep"""
+        self.keep_files = list(self.keep_folder.glob("*.*"))
 
         # Clear previous display
         for i in reversed(range(self.grid_layout.count())):
             self.grid_layout.itemAt(i).widget().setParent(None)
 
-        if not self.limbo_files:
-            no_results = QLabel("No images in limbo")
+        if not self.keep_files:
+            no_results = QLabel("No images in keep")
             no_results.setAlignment(Qt.AlignCenter)
             self.grid_layout.addWidget(no_results, 0, 0, 1, 3)
             self.update_status()
             return
 
         # Display images
-        for i, img_path in enumerate(self.limbo_files):
+        for i, img_path in enumerate(self.keep_files):
             try:
                 row, col = divmod(i, 3)
                 image_frame = ClickableImageLabel(self)
@@ -100,8 +100,8 @@ class LimboDialog(QWidget):
 
     def update_status(self):
         """Update status label"""
-        count = len(self.limbo_files)
-        self.status_label.setText(f"Images in limbo: {count}")
+        count = len(self.keep_files)
+        self.status_label.setText(f"Images in keep: {count}")
 
     def restore_selected(self):
         """Restore selected images to main folder"""
@@ -109,11 +109,11 @@ class LimboDialog(QWidget):
         for i in range(self.grid_layout.count()):
             widget = self.grid_layout.itemAt(i).widget()
             if isinstance(widget, ClickableImageLabel) and widget.selected:
-                if restore_from_limbo(widget.image_path, self.main_folder):
+                if restore_from_keep(widget.image_path, self.main_folder):
                     restored_count += 1
 
         if restored_count > 0:
-            logging.info(f"Restored {restored_count} images from limbo")
+            logging.info(f"Restored {restored_count} images from keep")
             self.close()
 
     def delete_selected(self):
